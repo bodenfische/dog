@@ -170,9 +170,53 @@ static int copy(int fd, const char *name) {
     }
 }
 
+static const char help[] =
+    "usage: dog [-AbeEnstTuv] [file ...]\n"
+    "  -A, --show-all           same as -vET\n"
+    "  -b, --number-nonblank    number non-blank lines, overrides -n\n"
+    "  -e                       same as -vE\n"
+    "  -E, --show-ends          show $ at end of each line\n"
+    "  -n, --number             number all lines\n"
+    "  -s, --squeeze-blank      squeeze repeated blank lines\n"
+    "  -t                       same as -vT\n"
+    "  -T, --show-tabs          show TABs as ^I\n"
+    "  -u                       ignored\n"
+    "  -v, --show-nonprinting   show nonprinting as ^X / M-X\n"
+    "      --help               show this help\n"
+    "With no file, or -, read stdin.\n";
+
+static const struct { const char *name; char flag; } longopts[] = {
+    { "show-all", 'A' },        { "number-nonblank", 'b' },
+    { "show-ends", 'E' },       { "number", 'n' },
+    { "squeeze-blank", 's' },   { "show-tabs", 'T' },
+    { "show-nonprinting", 'v' },
+};
+
+static int streq(const char *a, const char *b) {
+    while (*a && *a == *b) a++, b++;
+    return *a == *b;
+}
+
 static void usage(void) {
     say("usage: dog [-AbeEnstTuv] [file ...]", 0, 0);
     sys4(N_EXIT, 1, 0, 0, 0);
+}
+
+static int setflag(char c) {                /* 0 = ok, 1 = unknown */
+    switch (c) {
+    case 'n': f_n = 1; break;
+    case 'b': f_b = 1; break;
+    case 's': f_s = 1; break;
+    case 'E': f_E = 1; break;
+    case 'T': f_T = 1; break;
+    case 'v': f_v = 1; break;
+    case 'A': f_v = f_E = f_T = 1; break;
+    case 'e': f_v = f_E = 1; break;
+    case 't': f_v = f_T = 1; break;
+    case 'u': break;                        /* POSIX -u: no-op */
+    default: return 1;
+    }
+    return 0;
 }
 
 int dog_main(long *sp) {
@@ -183,24 +227,27 @@ int dog_main(long *sp) {
     for (i = 1, opts = 1; i < argc; i++) {
         const char *a = argv[i];
         if (!opts || a[0] != '-' || !a[1]) continue;
-        if (a[1] == '-' && !a[2]) { opts = 0; continue; }
+        if (a[1] == '-') {
+            unsigned k;
+            if (!a[2]) { opts = 0; continue; }
+            if (streq(a + 2, "help")) {
+                wr(1, help, sizeof help - 1);
+                sys4(N_EXIT, 0, 0, 0, 0);
+            }
+            for (k = 0; k < sizeof longopts / sizeof *longopts; k++)
+                if (streq(a + 2, longopts[k].name)) break;
+            if (k == sizeof longopts / sizeof *longopts) {
+                say("unrecognized option '", a, "'");
+                usage();
+            }
+            setflag(longopts[k].flag);
+            continue;
+        }
         for (a++; *a; a++) {
-            switch (*a) {
-            case 'n': f_n = 1; break;
-            case 'b': f_b = 1; break;
-            case 's': f_s = 1; break;
-            case 'E': f_E = 1; break;
-            case 'T': f_T = 1; break;
-            case 'v': f_v = 1; break;
-            case 'A': f_v = f_E = f_T = 1; break;
-            case 'e': f_v = f_E = 1; break;
-            case 't': f_v = f_T = 1; break;
-            case 'u': break;                /* POSIX -u: no-op */
-            default: {
+            if (setflag(*a)) {
                 char o[2] = { *a, 0 };
                 say("invalid option -- '", o, "'");
                 usage();
-            }
             }
         }
     }
