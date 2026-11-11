@@ -8,6 +8,9 @@
 #define N_CLOSE 3
 #define N_OPENAT 257
 #define N_EXIT 231
+#define N_FSTAT 5
+#define N_LSEEK 8
+#define MODE_IDX 6      /* st_mode: 32-bit word index into struct stat */
 static long sys4(long n, long a, long b, long c, long d) {
     long r;
     register long r10 __asm__("r10") = d;
@@ -24,6 +27,9 @@ __asm__(".globl _start\n_start:\n xor %ebp,%ebp\n mov %rsp,%rdi\n"
 #define N_CLOSE 57
 #define N_OPENAT 56
 #define N_EXIT 94
+#define N_FSTAT 80
+#define N_LSEEK 62
+#define MODE_IDX 4
 static long sys4(long n, long a, long b, long c, long d) {
     register long x8 __asm__("x8") = n, x0 __asm__("x0") = a,
                   x1 __asm__("x1") = b, x2 __asm__("x2") = c,
@@ -46,6 +52,16 @@ static int f_n, f_b, f_s, f_E, f_T, f_v;
 /* line state, carried across files like GNU cat */
 static int bol = 1, prev_empty, pend_cr;
 static unsigned long lineno;
+
+/* stdout identity, for the "input file is output file" check */
+static int out_reg;
+static unsigned long out_dev, out_ino;
+static union { unsigned long w[18]; unsigned int h[36]; } st;
+
+static int fstat_reg(int fd) {              /* 1 if regular file; fills st */
+    if (sys4(N_FSTAT, fd, (long)&st, 0, 0) < 0) return 0;
+    return (st.h[MODE_IDX] & 0170000) == 0100000;
+}
 
 /* output buffer */
 static char ob[65536];
@@ -153,6 +169,11 @@ static void process(const char *p, long n) {
 static int copy(int fd, const char *name) {
     static char buf[65536];
     int plain = !(f_n | f_b | f_s | f_E | f_T | f_v);
+    if (out_reg && fstat_reg(fd) && st.w[0] == out_dev && st.w[1] == out_ino
+        && sys4(N_LSEEK, fd, 0, 1 /* SEEK_CUR */, 0) < (long)st.w[6]) {
+        say(name, ": input file is output file", 0);
+        return 1;
+    }
     for (;;) {
         long r = sys4(N_READ, fd, (long)buf, sizeof buf, 0);
         if (r == -EINTR) continue;
@@ -251,6 +272,8 @@ int dog_main(long *sp) {
             }
         }
     }
+
+    if (fstat_reg(1)) { out_reg = 1; out_dev = st.w[0]; out_ino = st.w[1]; }
 
     /* pass 2: files */
     for (i = 1, opts = 1; i < argc; i++) {
