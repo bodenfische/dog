@@ -40,6 +40,17 @@ __asm__(".globl _start\n_start:\n mov x29,xzr\n mov x0,sp\n bl dog_main\n");
 #define AT_FDCWD (-100)
 #define EINTR 4
 
+/* flags */
+static int f_n, f_b, f_s, f_E;
+
+/* line state, carried across files like GNU cat */
+static int bol = 1, prev_empty, pend_cr;
+static unsigned long lineno;
+
+/* output buffer */
+static char ob[65536];
+static unsigned long on;
+
 static unsigned long slen(const char *s) { unsigned long n = 0; while (s[n]) n++; return n; }
 
 static int wr(int fd, const char *p, unsigned long n) {
@@ -52,7 +63,10 @@ static int wr(int fd, const char *p, unsigned long n) {
     return 0;
 }
 
+static void flush(void);
+
 static void say(const char *a, const char *b, const char *c) {
+    flush();                                /* keep stdout/stderr in order */
     wr(2, "dog: ", 5);
     if (a) wr(2, a, slen(a));
     if (b) wr(2, b, slen(b));
@@ -79,30 +93,111 @@ static void fail(const char *name, int e) {
     say(name, ": ", m);
 }
 
+static void flush(void) {
+    unsigned long n = on;
+    on = 0;
+    if (n) {
+        int e = wr(1, ob, n);
+        if (e) { fail("stdout", e); sys4(N_EXIT, 1, 0, 0, 0); }
+    }
+}
+
+static void put(char c) {
+    if (on == sizeof ob) flush();
+    ob[on++] = c;
+}
+
+static void put_number(void) {              /* GNU format: "%6lu\t" */
+    char t[24]; int i = 24; unsigned long n = ++lineno;
+    do { t[--i] = '0' + n % 10; n /= 10; } while (n);
+    for (int pad = 6 - (24 - i); pad > 0; pad--) put(' ');
+    while (i < 24) put(t[i++]);
+    put('\t');
+}
+
+static void process(const char *p, long n) {
+    for (; n > 0; p++, n--) {
+        char c = *p;
+        if (pend_cr) {                      /* GNU -E: CR before LF is ^M */
+            pend_cr = 0;
+            if (c == '\n') { put('^'); put('M'); }
+            else put('\r');
+        }
+        if (bol) {
+            if (c == '\n') {                /* blank line */
+                if (f_s && prev_empty) continue;
+                prev_empty = 1;
+                if (f_n && !f_b) put_number();
+                if (f_E) put('$');
+                put('\n');
+                continue;
+            }
+            prev_empty = 0;
+            if (f_n || f_b) put_number();
+            bol = 0;
+        }
+        if (c == '\r' && f_E) { pend_cr = 1; continue; }
+        if (c == '\n') { if (f_E) put('$'); bol = 1; }
+        put(c);
+    }
+}
+
 static int copy(int fd, const char *name) {
     static char buf[65536];
+    int plain = !(f_n | f_b | f_s | f_E);
     for (;;) {
         long r = sys4(N_READ, fd, (long)buf, sizeof buf, 0);
         if (r == -EINTR) continue;
         if (r < 0) { fail(name, (int)-r); return 1; }
-        if (r == 0) return 0;
-        int e = wr(1, buf, (unsigned long)r);
-        if (e) { fail("stdout", e); return 1; }
+        if (r == 0) {
+            if (pend_cr) { pend_cr = 0; put('\r'); }
+            return 0;
+        }
+        if (plain) {
+            int e = wr(1, buf, (unsigned long)r);
+            if (e) { fail("stdout", e); sys4(N_EXIT, 1, 0, 0, 0); }
+        } else {
+            process(buf, r);
+        }
     }
 }
 
+static void usage(void) {
+    say("usage: dog [-bEnsu] [file ...]", 0, 0);
+    sys4(N_EXIT, 1, 0, 0, 0);
+}
+
 int dog_main(long *sp) {
-    int argc = (int)sp[0], i = 1, rc = 0, files = 0, opts = 1;
+    int argc = (int)sp[0], i, rc = 0, files = 0, opts;
     char **argv = (char **)(sp + 1);
 
-    for (; i < argc; i++) {
+    /* pass 1: options (anywhere before "--", like GNU) */
+    for (i = 1, opts = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (!opts || a[0] != '-' || !a[1]) continue;
+        if (a[1] == '-' && !a[2]) { opts = 0; continue; }
+        for (a++; *a; a++) {
+            switch (*a) {
+            case 'n': f_n = 1; break;
+            case 'b': f_b = 1; break;
+            case 's': f_s = 1; break;
+            case 'E': f_E = 1; break;
+            case 'u': break;                /* POSIX -u: no-op */
+            default: {
+                char o[2] = { *a, 0 };
+                say("invalid option -- '", o, "'");
+                usage();
+            }
+            }
+        }
+    }
+
+    /* pass 2: files */
+    for (i = 1, opts = 1; i < argc; i++) {
         const char *a = argv[i];
         if (opts && a[0] == '-' && a[1]) {
-            if (a[1] == '-' && !a[2]) { opts = 0; continue; }
-            if (a[1] == 'u' && !a[2]) continue;          /* POSIX -u: no-op */
-            say("invalid option -- ", a + 1, 0);
-            say("usage: dog [-u] [file ...]", 0, 0);
-            sys4(N_EXIT, 1, 0, 0, 0);
+            if (a[1] == '-' && !a[2]) opts = 0;
+            continue;
         }
         files = 1;
         if (a[0] == '-' && !a[1]) { rc |= copy(0, "stdin"); continue; }
@@ -112,6 +207,7 @@ int dog_main(long *sp) {
         sys4(N_CLOSE, fd, 0, 0, 0);
     }
     if (!files) rc = copy(0, "stdin");
+    flush();
     sys4(N_EXIT, rc, 0, 0, 0);
     for (;;) {}
 }
