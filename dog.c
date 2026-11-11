@@ -41,7 +41,7 @@ __asm__(".globl _start\n_start:\n mov x29,xzr\n mov x0,sp\n bl dog_main\n");
 #define EINTR 4
 
 /* flags */
-static int f_n, f_b, f_s, f_E;
+static int f_n, f_b, f_s, f_E, f_T, f_v;
 
 /* line state, carried across files like GNU cat */
 static int bol = 1, prev_empty, pend_cr;
@@ -136,15 +136,23 @@ static void process(const char *p, long n) {
             if (f_n || f_b) put_number();
             bol = 0;
         }
-        if (c == '\r' && f_E) { pend_cr = 1; continue; }
-        if (c == '\n') { if (f_E) put('$'); bol = 1; }
-        put(c);
+        if (c == '\n') { if (f_E) put('$'); bol = 1; put(c); }
+        else if (c == '\t') { if (f_T) { put('^'); put('I'); } else put(c); }
+        else if (f_v) {                     /* ^X and M-X notation */
+            unsigned char u = (unsigned char)c;
+            if (u >= 128) { put('M'); put('-'); u -= 128; }
+            if (u < 32) { put('^'); put((char)(u + 64)); }
+            else if (u == 127) { put('^'); put('?'); }
+            else put((char)u);
+        }
+        else if (c == '\r' && f_E) pend_cr = 1;
+        else put(c);
     }
 }
 
 static int copy(int fd, const char *name) {
     static char buf[65536];
-    int plain = !(f_n | f_b | f_s | f_E);
+    int plain = !(f_n | f_b | f_s | f_E | f_T | f_v);
     for (;;) {
         long r = sys4(N_READ, fd, (long)buf, sizeof buf, 0);
         if (r == -EINTR) continue;
@@ -163,7 +171,7 @@ static int copy(int fd, const char *name) {
 }
 
 static void usage(void) {
-    say("usage: dog [-bEnsu] [file ...]", 0, 0);
+    say("usage: dog [-AbeEnstTuv] [file ...]", 0, 0);
     sys4(N_EXIT, 1, 0, 0, 0);
 }
 
@@ -182,6 +190,11 @@ int dog_main(long *sp) {
             case 'b': f_b = 1; break;
             case 's': f_s = 1; break;
             case 'E': f_E = 1; break;
+            case 'T': f_T = 1; break;
+            case 'v': f_v = 1; break;
+            case 'A': f_v = f_E = f_T = 1; break;
+            case 'e': f_v = f_E = 1; break;
+            case 't': f_v = f_T = 1; break;
             case 'u': break;                /* POSIX -u: no-op */
             default: {
                 char o[2] = { *a, 0 };

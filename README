@@ -2,4 +2,4 @@ dog - a drop in cat
 
 Build:  cc -O2 -static -nostdlib -ffreestanding -fno-builtin \
            -fno-stack-protector -fno-pie -no-pie dog.c -o dog
-Use:    dog [-u] [file ...]     ("-" or no args = stdin)
+Use:    dog [-AbeEnstTuv] [file ...]    # "-" or no args = stdin
